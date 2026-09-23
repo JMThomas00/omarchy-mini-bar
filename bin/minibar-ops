@@ -1,0 +1,232 @@
+#!/bin/bash
+# Mini-Bar helper. Every change is ONE atomic shell.json rewrite (via the same
+# `commit` helper the omarchy CLI uses), so the shell sees a single reload.
+#
+# Each Mini-Bar group is its own bar entry:
+#   {"id":"jmthomas00.minibar","gid":"g1","label":"Network","glyph":"…","face":"glyph",
+#    "orientation":"auto","memberDisplay":"native","tooltip":true,"members":[{"id":"…",…}]}
+# so the native bar drag can place every group anywhere.
+#
+#   minibar-ops create  <gid> <label> [after-gid]   add a new (empty) group entry
+#   minibar-ops set     <gid> <key> <json-value>    change one appearance setting
+#   minibar-ops apply   '<json ops>'                batch of any mix of:
+#                          {"op":"assign","gid":"…","wid":"…"}
+#                          {"op":"unassign","gid":"…","wid":"…"}
+#                          {"op":"dissolve","gid":"…"}
+#                          {"op":"set","gid":"…","key":"…","value":…}
+#                          {"op":"memberSet","gid":"…","wid":"…","key":"badgeProperty"|"urgentProperty","value":"…"}
+#                          {"op":"reorder","gid":"…","order":["wid",…]}
+#   minibar-ops assign|unassign <gid> <wid>        single-op shorthands for apply
+#   minibar-ops dissolve <gid>                      return every member, delete the group entry
+#   minibar-ops adopt   <gid>                       give a bare (unconfigured) entry a group id
+#   minibar-ops migrate                             split legacy single-entry `groups:[…]` into one entry each
+#   minibar-ops compat  '<json-array-of-ids>'       read-only: which of those ids look unsafe to host (see below)
+#
+# A widget "in a group" is removed from bar.layout and listed in plugins[] instead:
+# the shell keeps a plugin enabled while it appears in either place, and a widget
+# that stays enabled keeps its Component in the catalog for the group to host.
+#
+# MINIBAR_DRYRUN=<file>  print the result of the operation on that file, write nothing.
+
+set -euo pipefail
+
+SELF_ID="jmthomas00.minibar"
+export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+source omarchy-shell-config
+
+# Where "reopen the manager/strip you had open" notes live — NOT under the
+# plugin's own watched directory (never write plugin state there — it triggers
+# a hot-reload of the very plugin whose state you're writing) and NOT relying on
+# the shell process keeping anything in memory: a bar.layout write reliably
+# triggers more than one widget-recreation pass in a row (confirmed live), and a
+# note that only lives on a QML property dies with whichever pass's object held
+# it. A plain file survives all of that.
+STATE_DIR="$HOME/.local/state/minibar"
+
+DEFS='
+  def eid: if type == "object" then .id else . end;
+  def asobj: if type == "object" then . else {id: .} end;
+  def isself: type == "object" and .id == $self;
+  def vid: if type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$") then . else error("invalid id") end;
+
+  # {sec, idx} of the group entry with this gid
+  def gloc($gid):
+    [ .bar.layout | to_entries[] | .key as $sec
+      | (.value | to_entries[] | select(.value | isself and (.gid == $gid)) | {sec: $sec, idx: .key}) ][0];
+  def need($gid): (gloc($gid)) as $l | if $l == null then error("no such group") else $l end;
+
+  def place_after($gid; $entry):
+    need($gid) as $l
+    | .bar.layout[$l.sec] |= (.[0:$l.idx + 1] + [$entry] + .[$l.idx + 1:]);
+
+  def do_assign($gid; $wid):
+    ($gid | vid) as $gid | ($wid | vid) as $wid
+    | if $wid == $self then error("Mini-Bar cannot hold itself") else . end
+    | need($gid) as $probe
+    | ( [.bar.layout[][] | select(eid == $wid)][0]
+        // [.bar.layout[][] | select(isself) | (.members // [])[] | select(.id == $wid)][0]
+        // {id: $wid} | asobj ) as $entry
+    | .bar.layout |= with_entries(.value |= map(
+        if isself then .members = ((.members // []) | map(select(.id != $wid)))
+        elif eid == $wid then empty
+        else . end))
+    | need($gid) as $l
+    | .bar.layout[$l.sec][$l.idx].members += [$entry]
+    | .plugins |= (if any(.[]; .id == $wid) then . else . + [{id: $wid}] end);
+
+  # Mini-Bar-only per-member keys never belong on a plain bar.layout entry —
+  # strip them whenever a member actually leaves the group for the bar (NOT
+  # on a direct group-to-group move via do_assign'"'"'s own entry-reuse path,
+  # which deliberately keeps them). Otherwise a badgeProperty/urgentProperty
+  # override set once would silently reappear, unannounced, the next time
+  # that same widget gets added to ANY group.
+  def stripMemberOnlyKeys: del(.badgeProperty, .urgentProperty);
+
+  def do_unassign($gid; $wid):
+    ($gid | vid) as $gid | ($wid | vid) as $wid
+    | need($gid) as $l
+    | ([.bar.layout[$l.sec][$l.idx].members[]? | select(.id == $wid)][0]) as $entry
+    | if $entry == null then error("not a member of that group") else . end
+    | .bar.layout[$l.sec][$l.idx].members |= map(select(.id != $wid))
+    | place_after($gid; ($entry | stripMemberOnlyKeys))
+    | .plugins |= map(select(.id != $wid));
+
+  def do_dissolve($gid):
+    ($gid | vid) as $gid
+    | need($gid) as $l
+    | ((.bar.layout[$l.sec][$l.idx].members // [])) as $members
+    | reduce ($members | reverse)[] as $m (.; place_after($gid; ($m | stripMemberOnlyKeys)) | .plugins |= map(select(.id != $m.id)))
+    | need($gid) as $l2
+    | .bar.layout[$l2.sec] |= (.[0:$l2.idx] + .[$l2.idx + 1:]);
+
+  def do_create($gid; $label; $after):
+    ($gid | vid) as $gid
+    | if gloc($gid) != null then error("group id already exists") else . end
+    | {id: $self, gid: $gid, label: $label, glyph: "󰀻", face: "glyph", orientation: "auto",
+       memberDisplay: "native", members: []} as $e
+    | (if $after != "" then gloc($after) else null end) as $l
+    | if $l != null then .bar.layout[$l.sec] |= (.[0:$l.idx + 1] + [$e] + .[$l.idx + 1:])
+      else .bar.layout.right += [$e] end;
+
+  def do_set($gid; $key; $val):
+    ($gid | vid) as $gid
+    | if (["label","glyph","face","orientation","memberDisplay","tooltip","badge","badgeMode"] | index($key)) == null
+      then error("unknown setting") else . end
+    | need($gid) as $l
+    | .bar.layout[$l.sec][$l.idx][$key] = $val;
+
+  # Per-member override, e.g. {"op":"memberSet","gid":"…","wid":"…","key":"badgeProperty","value":"downCount"}.
+  # Mini-Bar cannot know every plugin author'"'"'s own property name for a badge
+  # count or urgent flag ahead of time (there'"'"'s no shared convention — see
+  # MiniBar.qml'"'"'s badgeCandidates comment), so this is the manual escape hatch:
+  # an empty value clears the override and falls back to the auto-detect list.
+  def do_memberset($gid; $wid; $key; $val):
+    ($gid | vid) as $gid | ($wid | vid) as $wid
+    | if (["badgeProperty","urgentProperty"] | index($key)) == null then error("unknown member setting") else . end
+    | need($gid) as $l
+    | ((.bar.layout[$l.sec][$l.idx].members // []) | map(.id) | index($wid)) as $mi
+    | if $mi == null then error("not a member of that group") else . end
+    | if $val == "" then .bar.layout[$l.sec][$l.idx].members[$mi] |= del(.[$key])
+      else .bar.layout[$l.sec][$l.idx].members[$mi][$key] = $val end;
+
+  def do_reorder($gid; $order):
+    ($gid | vid) as $gid
+    | need($gid) as $l
+    | (.bar.layout[$l.sec][$l.idx].members // []) as $cur
+    | ($cur | map(.id)) as $curIds
+    | ($order | map(select(. as $x | $curIds | index($x) != null))) as $validOrder
+    | ([$validOrder[] as $id | ($cur[] | select(.id == $id))]) as $ordered
+    | ($cur | map(select(.id as $id | ($validOrder | index($id)) == null))) as $rest
+    | .bar.layout[$l.sec][$l.idx].members = ($ordered + $rest);
+
+  def do_adopt($gid):
+    ($gid | vid) as $gid
+    | ([ .bar.layout | to_entries[] | .key as $sec
+         | (.value | to_entries[] | select(.value | isself and (.gid == null)) | {sec: $sec, idx: .key}) ][0]) as $l
+    | if $l == null then error("no unconfigured Mini-Bar entry") else . end
+    | .bar.layout[$l.sec][$l.idx] = {id: $self, gid: $gid, label: "Group", glyph: "󰀻", face: "glyph",
+        orientation: "auto", memberDisplay: "native", members: []};
+'
+
+run() {
+  local program="$1"; shift
+  if [[ -n ${MINIBAR_DRYRUN:-} ]]; then
+    jq -S -e "$@" "$DEFS $NORMALIZE | $program" "$MINIBAR_DRYRUN"
+  else
+    commit "$DEFS $NORMALIZE | $program" "$@"
+  fi
+}
+
+case "${1:-}" in
+  create)
+    [[ $# -ge 3 ]] || { echo "usage: create <gid> <label> [after-gid]"; exit 1; }
+    run 'do_create($gid; $label; $after)' --arg self "$SELF_ID" --arg gid "$2" --arg label "$3" --arg after "${4:-}"
+    echo "created group $2" ;;
+  set)
+    [[ $# -eq 4 ]] || { echo "usage: set <gid> <key> <json-value>"; exit 1; }
+    run 'do_set($gid; $key; $val)' --arg self "$SELF_ID" --arg gid "$2" --arg key "$3" --argjson val "$4"
+    echo "set $3 on $2" ;;
+  apply)
+    [[ $# -eq 2 ]] || { echo "usage: apply '<json ops>'"; exit 1; }
+    run 'reduce $ops[] as $o (.;
+           if   $o.op == "assign"   then do_assign($o.gid; $o.wid)
+           elif $o.op == "unassign" then do_unassign($o.gid; $o.wid)
+           elif $o.op == "dissolve" then do_dissolve($o.gid)
+           elif $o.op == "set"      then do_set($o.gid; $o.key; $o.value)
+           elif $o.op == "memberSet" then do_memberset($o.gid; $o.wid; $o.key; $o.value)
+           elif $o.op == "reorder"  then do_reorder($o.gid; $o.order)
+           else error("unknown op") end)' --arg self "$SELF_ID" --argjson ops "$2"
+    echo "applied $(jq 'length' <<<"$2") change(s)" ;;
+  assign|unassign)
+    [[ $# -eq 3 ]] || { echo "usage: $1 <gid> <wid>"; exit 1; }
+    exec "$0" apply "$(jq -cn --arg op "$1" --arg gid "$2" --arg wid "$3" '[{op:$op,gid:$gid,wid:$wid}]')" ;;
+  dissolve)
+    [[ $# -eq 2 ]] || { echo "usage: dissolve <gid>"; exit 1; }
+    exec "$0" apply "$(jq -cn --arg gid "$2" '[{op:"dissolve",gid:$gid}]')" ;;
+  reorder)
+    [[ $# -eq 3 ]] || { echo "usage: reorder <gid> <json-array-of-widget-ids>"; exit 1; }
+    exec "$0" apply "$(jq -cn --arg gid "$2" --argjson order "$3" '[{op:"reorder",gid:$gid,order:$order}]')" ;;
+  adopt)
+    [[ $# -eq 2 ]] || { echo "usage: adopt <gid>"; exit 1; }
+    run 'do_adopt($gid)' --arg self "$SELF_ID" --arg gid "$2"
+    echo "adopted as $2" ;;
+  migrate)
+    run '.bar.layout |= with_entries(.value |= [ .[]
+           | if isself and (.groups | type == "array") then
+               (if (.groups | length) == 0 then {id: $self}
+                else (.groups[] | {id: $self, gid: .id} + del(.id)) end)
+             else . end ])' --arg self "$SELF_ID"
+    echo "migrated" ;;
+  remember)
+    [[ $# -eq 4 ]] || { echo "usage: remember <manager|strip> <gid> <screen>"; exit 1; }
+    [[ $2 == manager || $2 == strip ]] || { echo "unknown kind"; exit 1; }
+    mkdir -p "$STATE_DIR"
+    jq -cn --arg gid "$3" --arg screen "$4" --argjson at "$(date +%s%3N)" '{gid:$gid,screen:$screen,at:$at}' \
+      > "$STATE_DIR/resume-$2.json"
+    echo "remembered $2 $3" ;;
+  forget)
+    [[ $# -eq 2 ]] || { echo "usage: forget <manager|strip>"; exit 1; }
+    [[ $2 == manager || $2 == strip ]] || { echo "unknown kind"; exit 1; }
+    rm -f "$STATE_DIR/resume-$2.json"
+    echo "forgot $2" ;;
+  compat)
+    # minibar-ops compat '<json-array-of-widget-ids>'
+    #   -> JSON array: the subset of those ids whose OWN source calls
+    #      bar.shell.serviceFor(...)/firstPartyServiceFor(...) — the exact
+    #      pattern that silently breaks a widget's own service lookup when
+    #      hosted (see ManagerPanel.qml's knownBroken comment/round-3 notes).
+    #      A plugin id with no directory under ~/.config/omarchy/plugins
+    #      (first-party widgets aren't laid out that way) is never flagged —
+    #      read-only filesystem check, doesn't touch shell.json, no commit.
+    [[ $# -eq 2 ]] || { echo "usage: compat '<json-array-of-ids>'"; exit 1; }
+    PLUGIN_DIR="$HOME/.config/omarchy/plugins"
+    risky=()
+    while IFS= read -r id; do
+      [[ -n $id ]] || continue
+      dir="$PLUGIN_DIR/$id"
+      [[ -d $dir ]] || continue
+      grep -rlqE '\.shell\.(serviceFor|firstPartyServiceFor)\(' "$dir" --include='*.qml' 2>/dev/null && risky+=("$id")
+    done < <(jq -r '.[]' <<<"$2")
+    jq -cn --args '$ARGS.positional' "${risky[@]}" ;;
+  *) echo "usage: minibar-ops create|set|apply|assign|unassign|dissolve|adopt|migrate|remember|forget|compat ..."; exit 1 ;;
+esac

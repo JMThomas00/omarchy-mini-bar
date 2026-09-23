@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "jmthomas00.minibar",
+  "name": "Mini-Bar",
+  "version": "0.1.0",
+  "author": "JMThomas00",
+  "license": "MIT",
+  "description": "Corral your bar's stray widgets into one tidy Mini-Bar — click the icon to pour them back out.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Mini-Bar",
+    "description": "Group bar widgets behind one icon",
+    "category": "Utility",
+    "allowMultiple": true,
+    "defaults": {}
+  }
+}
