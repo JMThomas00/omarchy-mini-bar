@@ -97,6 +97,7 @@ QtObject {
     opsProc.job = job
     opsProc.command = [root.sourceDir + "/bin/minibar-ops"].concat(job.args)
     opsBusy = true
+    opsProc.started = false
     watchdog.restart()
     opsProc.running = true
   }
@@ -106,8 +107,25 @@ QtObject {
   // a dead caller can never leave the queue stuck.
   property Process opsProc: Process {
     property var job: null
+    property bool started: false
     stdout: StdioCollector { id: opsOut }
     stderr: StdioCollector { id: opsErr }
+    onStarted: started = true
+    // A helper that can't be exec'd at all (missing, not executable) never
+    // emits exited, so without this it only surfaced 20s later as a vague
+    // timeout. Report it right away and keep the queue moving.
+    onRunningChanged: {
+      if (running || started || !root.opsBusy) return
+      watchdog.stop()
+      var finished = job
+      root.lastOpsError = "FAILED: could not start " + root.sourceDir + "/bin/minibar-ops (is it present and executable?)"
+      root.opsBusy = root._queue.length > 0
+      root.opsFinished(-1, root.lastOpsError)
+      if (finished && finished.done) {
+        try { finished.done(-1, root.lastOpsError) } catch (e) { console.log("[minibar] ops callback dropped: " + e) }
+      }
+      Qt.callLater(root._pump)
+    }
     onExited: function(code) {
       watchdog.stop()
       var text = (code === 0 ? opsOut.text : (opsErr.text || opsOut.text)).trim()

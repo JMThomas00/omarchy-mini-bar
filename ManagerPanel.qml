@@ -84,7 +84,21 @@ KeyboardPanel {
   onCandidatesChanged: _scanCompat(candidates.map(function(c) { return c.id }))
   onElsewhereChanged: _scanCompat(elsewhere.map(function(e) { return e.id }))
 
-  readonly property string note: svc ? svc.lastOpsError : ""
+  // `svc` comes from the shell (bar.shell.serviceFor). If it never arrives,
+  // every button below would otherwise do nothing at all, so say so here
+  // instead -- the helper's own errors still come through svc.lastOpsError.
+  property string localError: ""
+  readonly property string serviceMissingError: "FAILED: Mini-Bar's background service isn't running, so groups can't be changed. "
+    + "Try `omarchy restart shell`; if this stays, please open an issue with the output of `journalctl --user -b | grep -i minibar`."
+  readonly property string note: localError !== "" ? localError : (svc ? svc.lastOpsError : "")
+  onSvcChanged: if (svc) localError = ""
+
+  function requireService() {
+    if (svc) return true
+    localError = serviceMissingError
+    console.warn("[minibar] no service for " + "jmthomas00.minibar" + " -- bar.shell.serviceFor() returned null")
+    return false
+  }
 
   property string selectedGid: ""
   readonly property var selected: {
@@ -303,7 +317,7 @@ KeyboardPanel {
   readonly property string screenName: anchorWindow && anchorWindow.screen ? anchorWindow.screen.name : ""
 
   function apply() {
-    if (!svc || busy || draft.length === 0) return
+    if (!requireService() || busy || draft.length === 0) return
     svc.lastOpsError = ""
     svc.rememberManager(sel, screenName)
     var ops = draft
@@ -312,7 +326,7 @@ KeyboardPanel {
   }
 
   function newGroup() {
-    if (!svc || busy) return
+    if (!requireService() || busy) return
     var gid = svc.newGroupId()
     svc.lastOpsError = ""
     svc.rememberManager(gid, screenName)
@@ -320,7 +334,7 @@ KeyboardPanel {
   }
 
   function dissolve() {
-    if (!svc || busy || !selected) return
+    if (!requireService() || busy || !selected) return
     var other = ""
     for (var i = 0; i < groups.length; i++) if (groups[i].gid !== selected.gid) { other = groups[i].gid; break }
     svc.lastOpsError = ""

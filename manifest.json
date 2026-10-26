@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jmthomas00.minibar",
   "name": "Mini-Bar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "JMThomas00",
   "license": "MIT",
   "description": "Corral your bar's stray widgets into one tidy Mini-Bar — click the icon to pour them back out.",
