@@ -29,7 +29,7 @@ BarWidget {
   readonly property var allGroups: {
     var layout = bar && bar.layoutConfig ? bar.layoutConfig : ({})
     var out = []
-    var sections = ["left", "center", "right"]
+    var sections = ["left", "centerBegin", "center", "centerEnd", "right"]
     for (var s = 0; s < sections.length; s++) {
       var arr = layout[sections[s]] || []
       for (var i = 0; i < arr.length; i++) {
@@ -160,7 +160,7 @@ BarWidget {
     groups: root.allGroups
     focusGroupId: root.gid
     open: root.managerOpen
-    centerOnBar: root.barSection === "center"
+    centerOnBar: root.barSection.indexOf("center") === 0
     onCloseRequested: root.closeManager()
   }
 

@@ -51,7 +51,7 @@ QtObject {
   // real layout, so report them in the section their group sits in.
   readonly property var layoutConfig: {
     var base = hostBar && hostBar.layoutConfig ? hostBar.layoutConfig : ({})
-    var out = { left: (base.left || []).slice(), center: (base.center || []).slice(), right: (base.right || []).slice() }
+    var out = { left: (base.left || []).slice(), centerBegin: (base.centerBegin || []).slice(), center: (base.center || []).slice(), centerEnd: (base.centerEnd || []).slice(), right: (base.right || []).slice() }
     var section = out[sectionName] ? sectionName : "left"
     for (var i = 0; i < memberIds.length; i++) out[section].push({ id: memberIds[i] })
     return out

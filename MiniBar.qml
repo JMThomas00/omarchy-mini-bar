@@ -48,7 +48,11 @@ PanelWindow {
   readonly property bool barVertical: pos === "left" || pos === "right"
   readonly property bool stripVertical: orientation === "vertical" || (orientation !== "horizontal" && barVertical)
   readonly property bool labelled: memberDisplay === "name" || memberDisplay === "both"
-  readonly property real realThickness: anchorWindow ? (barVertical ? anchorWindow.width : anchorWindow.height) : 0
+  // Omarchy 4.5 maps the bar as a full-screen surface, so the window's own size
+  // is no longer the bar's thickness; the host bar reports it as barSize.
+  readonly property real realThickness: hostBarRef && hostBarRef.barSize > 0
+    ? hostBarRef.barSize
+    : (anchorWindow ? (barVertical ? anchorWindow.width : anchorWindow.height) : 0)
   readonly property real gap: Style.gapsOut
   readonly property real pad: Style.space(4)
   readonly property real cellPad: Style.space(8)

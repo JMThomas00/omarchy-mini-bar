@@ -378,7 +378,7 @@ KeyboardPanel {
     if (selected) for (var m = 0; m < (selected.members || []).length; m++) if (svc) cats[svc.categoryOf(selected.members[m].id)] = true
     var have = {}
     var out = []
-    var sections = ["left", "center", "right"]
+    var sections = ["left", "centerBegin", "center", "centerEnd", "right"]
     for (var s = 0; s < sections.length; s++) {
       var arr = layout[sections[s]] || []
       for (var i = 0; i < arr.length; i++) {
